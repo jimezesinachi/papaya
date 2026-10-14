@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use super::CachePadded;
+use std::num::NonZeroUsize;
 
 // A sharded atomic counter.
 //
@@ -26,15 +27,23 @@ impl Default for Counter {
         });
 
         // Round up to the next power-of-two for fast modulo.
-        let shards = (0..num_cpus.next_power_of_two())
-            .map(|_| Default::default())
-            .collect();
-
-        Counter(shards)
+        Self::with_shards(NonZeroUsize::new(num_cpus.next_power_of_two()).unwrap())
     }
 }
 
 impl Counter {
+    pub fn with_shards(shards: NonZeroUsize) -> Self {
+        assert!(
+            shards.get().is_power_of_two(),
+            "counter shards must be a power of two"
+        );
+        Counter((0..shards.get()).map(|_| Default::default()).collect())
+    }
+
+    pub fn shards(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.0.len()).unwrap()
+    }
+
     // Return the shard for the given thread ID.
     #[inline]
     pub fn get(&self, guard: &impl seize::Guard) -> &AtomicIsize {

@@ -5,6 +5,7 @@ pub(crate) mod utils;
 
 use std::hash::{BuildHasher, Hash};
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{hint, panic, ptr};
@@ -221,7 +222,9 @@ impl<K, V, S> HashMap<K, V, S> {
         hasher: S,
         collector: Arc<Collector>,
         resize: ResizeMode,
+        counter_shards: Option<NonZeroUsize>,
     ) -> HashMap<K, V, S> {
+        let count = counter_shards.map(Counter::with_shards).unwrap_or_default();
         // The table is lazily allocated.
         if capacity == 0 {
             return HashMap {
@@ -230,7 +233,7 @@ impl<K, V, S> HashMap<K, V, S> {
                 hasher,
                 initial_capacity: 1,
                 table: AtomicPtr::new(ptr::null_mut()),
-                count: Counter::default(),
+                count,
             };
         }
 
@@ -246,7 +249,7 @@ impl<K, V, S> HashMap<K, V, S> {
             collector,
             initial_capacity: capacity,
             table: AtomicPtr::new(table.raw),
-            count: Counter::default(),
+            count,
         }
     }
     /// Returns a guard for this collector
@@ -291,6 +294,11 @@ impl<K, V, S> HashMap<K, V, S> {
     #[inline]
     pub fn collector(&self) -> &Collector {
         &self.collector
+    }
+
+    /// Returns the configured number of length-counter shards.
+    pub fn counter_shards(&self) -> NonZeroUsize {
+        self.count.shards()
     }
 
     /// Returns the number of entries in the table.

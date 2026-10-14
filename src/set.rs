@@ -8,6 +8,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// A concurrent hash set.
@@ -49,6 +50,7 @@ unsafe impl<K: Sync, S: Sync> Sync for HashSet<K, S> {}
 pub struct HashSetBuilder<K, S = RandomState> {
     hasher: S,
     capacity: usize,
+    counter_shards: Option<NonZeroUsize>,
     collector: Arc<Collector>,
     resize_mode: ResizeMode,
     _kv: PhantomData<K>,
@@ -70,6 +72,7 @@ impl<K> HashSetBuilder<K> {
             capacity: self.capacity,
             collector: self.collector,
             resize_mode: self.resize_mode,
+            counter_shards: self.counter_shards,
             _kv: PhantomData,
         }
     }
@@ -92,6 +95,7 @@ where
             hasher: self.hasher,
             capacity: self.capacity,
             resize_mode: self.resize_mode,
+            counter_shards: self.counter_shards,
             _kv: PhantomData,
         }
     }
@@ -110,6 +114,7 @@ impl<K, S> HashSetBuilder<K, S> {
             hasher: self.hasher,
             capacity: self.capacity,
             resize_mode: self.resize_mode,
+            counter_shards: self.counter_shards,
             _kv: PhantomData,
         }
     }
@@ -124,6 +129,7 @@ impl<K, S> HashSetBuilder<K, S> {
             hasher: self.hasher,
             collector: self.collector,
             resize_mode: self.resize_mode,
+            counter_shards: self.counter_shards,
             _kv: PhantomData,
         }
     }
@@ -135,14 +141,39 @@ impl<K, S> HashSetBuilder<K, S> {
             hasher: self.hasher,
             capacity: self.capacity,
             collector: self.collector,
+            counter_shards: self.counter_shards,
             _kv: PhantomData,
         }
+    }
+
+    /// Set the number of shards used by the atomic length counter.
+    ///
+    /// By default, the number of available CPUs is rounded up to a power of two.
+    /// Fewer shards reduce per-collection memory usage, but can increase contention
+    /// between concurrent writers. Read operations do not update the counter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shards` is not a power of two.
+    pub fn counter_shards(mut self, shards: NonZeroUsize) -> Self {
+        assert!(
+            shards.get().is_power_of_two(),
+            "counter shards must be a power of two"
+        );
+        self.counter_shards = Some(shards);
+        self
     }
 
     /// Construct a [`HashSet`] from the builder, using the configured options.
     pub fn build(self) -> HashSet<K, S> {
         HashSet {
-            raw: raw::HashMap::new(self.capacity, self.hasher, self.collector, self.resize_mode),
+            raw: raw::HashMap::new(
+                self.capacity,
+                self.hasher,
+                self.collector,
+                self.resize_mode,
+                self.counter_shards,
+            ),
         }
     }
 }
@@ -151,6 +182,7 @@ impl<K, S> fmt::Debug for HashSetBuilder<K, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashSetBuilder")
             .field("capacity", &self.capacity)
+            .field("counter_shards", &self.counter_shards)
             .field("collector", &self.collector)
             .field("resize_mode", &self.resize_mode)
             .finish()
@@ -199,6 +231,7 @@ impl<K> HashSet<K> {
             hasher: RandomState::default(),
             collector: Arc::new(Collector::default()),
             resize_mode: ResizeMode::default(),
+            counter_shards: None,
             _kv: PhantomData,
         }
     }
@@ -271,6 +304,7 @@ impl<K, S> HashSet<K, S> {
                 hash_builder,
                 Arc::new(Collector::default()),
                 ResizeMode::default(),
+                None,
             ),
         }
     }
@@ -713,6 +747,7 @@ where
     fn clone(&self) -> HashSet<K, S> {
         let other = HashSet::builder()
             .capacity(self.len())
+            .counter_shards(self.raw.counter_shards())
             .hasher(self.raw.hasher.clone())
             .collector(seize::Collector::new())
             .build();
